@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { sql, relations } from "drizzle-orm";
 import { pgTable, text, varchar, integer, decimal, timestamp, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -119,3 +119,46 @@ export const ActivityType = {
   NOTE: "note",
   TASK: "task",
 } as const;
+
+// Relations
+export const companiesRelations = relations(companies, ({ many }) => ({
+  contacts: many(contacts),
+  deals: many(deals),
+  activities: many(activities),
+}));
+
+export const contactsRelations = relations(contacts, ({ one, many }) => ({
+  company: one(companies, {
+    fields: [contacts.companyId],
+    references: [companies.id],
+  }),
+  deals: many(deals),
+  activities: many(activities),
+}));
+
+export const dealsRelations = relations(deals, ({ one, many }) => ({
+  company: one(companies, {
+    fields: [deals.companyId],
+    references: [companies.id],
+  }),
+  contact: one(contacts, {
+    fields: [deals.contactId],
+    references: [contacts.id],
+  }),
+  activities: many(activities),
+}));
+
+export const activitiesRelations = relations(activities, ({ one }) => ({
+  company: one(companies, {
+    fields: [activities.companyId],
+    references: [companies.id],
+  }),
+  contact: one(contacts, {
+    fields: [activities.contactId],
+    references: [contacts.id],
+  }),
+  deal: one(deals, {
+    fields: [activities.dealId],
+    references: [deals.id],
+  }),
+}));
