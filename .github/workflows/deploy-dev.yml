@@ -1,0 +1,91 @@
+name: Deploy to Development
+
+on:
+  push:
+    branches: [ main ]
+  workflow_run:
+    workflows: ["CI Pipeline"]
+    branches: [ main ]
+    types:
+      - completed
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: true
+
+env:
+  CLUSTER_NAME: dev-cluster
+  CLUSTER_ZONE: us-central1-a
+  NAMESPACE: crm-dev
+
+jobs:
+  deploy-dev:
+    name: Deploy to Development Environment
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'push' }}
+    environment: 
+      name: development
+      url: https://crm-dev.yourdomain.com
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials "$CLUSTER_NAME" --zone="$CLUSTER_ZONE"
+
+      - name: Setup Kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Update image tag
+        run: |
+          cd k8s/overlays/development
+          kustomize edit set image crm-app=ghcr.io/${{ github.repository }}:${{ github.sha }}
+
+      - name: Deploy to development
+        run: |
+          kustomize build k8s/overlays/development | kubectl apply -f -
+          kubectl rollout status deployment/dev-crm-app-deployment -n $NAMESPACE --timeout=600s
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n $NAMESPACE -l app=crm-app
+          kubectl get services -n $NAMESPACE -l app=crm-app
+
+      - name: Run smoke tests
+        run: |
+          # Wait for service to be ready
+          kubectl wait --for=condition=available --timeout=300s deployment/dev-crm-app-deployment -n $NAMESPACE
+          
+          # Get service URL
+          EXTERNAL_IP=$(kubectl get service dev-crm-app-service -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          
+          # Basic health check
+          curl -f http://$EXTERNAL_IP/health || exit 1
+          
+          # Basic API test
+          curl -f http://$EXTERNAL_IP/api/companies || exit 1
+
+      - name: Run E2E tests (light)
+        run: |
+          # Install Playwright
+          npx playwright install --with-deps chromium
+          
+          # Run basic E2E tests against dev environment
+          npx playwright test --config=playwright-dev.config.js --reporter=github

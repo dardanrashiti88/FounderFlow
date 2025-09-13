@@ -1,0 +1,240 @@
+name: Deploy to Production
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to deploy'
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  CLUSTER_NAME: prod-cluster
+  CLUSTER_ZONE: us-central1
+  NAMESPACE: crm-production
+
+jobs:
+  pre-deployment-checks:
+    name: Pre-deployment Security & Compliance
+    runs-on: ubuntu-latest
+    outputs:
+      release-tag: ${{ steps.get-tag.outputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get release tag
+        id: get-tag
+        run: |
+          if [ "${{ github.event_name }}" == "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.event.inputs.release_tag }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Verify signed container
+        run: |
+          # Install cosign
+          go install github.com/sigstore/cosign/cmd/cosign@latest
+          
+          # Verify container signature
+          cosign verify \
+            --certificate-identity-regexp="https://github.com/${{ github.repository }}/*" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+            ghcr.io/${{ github.repository }}:${{ steps.get-tag.outputs.tag }}
+
+      - name: Compliance checks
+        run: |
+          echo "Running compliance checks..."
+          # Add compliance validation logic here
+          # e.g., SOC2, PCI DSS, GDPR compliance checks
+
+  deploy-production:
+    name: Production Deployment
+    runs-on: ubuntu-latest
+    needs: pre-deployment-checks
+    environment: 
+      name: production
+      url: https://crm.yourdomain.com
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER_PROD }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT_PROD }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials "$CLUSTER_NAME" --zone="$CLUSTER_ZONE"
+
+      - name: Setup Argo Rollouts CLI
+        run: |
+          curl -LO https://github.com/argoproj/argo-rollouts/releases/latest/download/kubectl-argo-rollouts-linux-amd64
+          chmod +x kubectl-argo-rollouts-linux-amd64
+          sudo mv kubectl-argo-rollouts-linux-amd64 /usr/local/bin/kubectl-argo-rollouts
+
+      - name: Setup Kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Create backup of current deployment
+        run: |
+          # Create backup manifests
+          kubectl get deployment prod-crm-app-deployment -n $NAMESPACE -o yaml > backup-deployment.yaml
+          kubectl get configmap -n $NAMESPACE -o yaml > backup-configmaps.yaml
+
+      - name: Update image tag for production
+        run: |
+          cd k8s/overlays/production
+          kustomize edit set image crm-app=ghcr.io/${{ github.repository }}:${{ needs.pre-deployment-checks.outputs.release-tag }}
+
+      - name: Deploy with Argo Rollouts (Canary Strategy)
+        run: |
+          # Apply production configuration
+          kustomize build k8s/overlays/production | kubectl apply -f -
+          
+          # Start canary rollout
+          kubectl argo rollouts set image prod-crm-app-rollout \
+            crm-app=ghcr.io/${{ github.repository }}:${{ needs.pre-deployment-checks.outputs.release-tag }} \
+            -n $NAMESPACE
+
+      - name: Monitor canary deployment (10% traffic)
+        run: |
+          # Wait for canary step 1 (10% traffic)
+          kubectl argo rollouts get rollout prod-crm-app-rollout -n $NAMESPACE --watch --timeout=600s
+          
+          # Validate metrics at 10% traffic
+          sleep 300  # Wait for metrics collection
+          
+          # Check error rates and latency
+          echo "Validating 10% canary metrics..."
+
+      - name: Promote to 50% traffic
+        run: |
+          # Promote canary to next step (50% traffic)
+          kubectl argo rollouts promote prod-crm-app-rollout -n $NAMESPACE
+          
+          # Wait for 50% deployment
+          kubectl argo rollouts get rollout prod-crm-app-rollout -n $NAMESPACE --watch --timeout=600s
+
+      - name: Monitor 50% canary deployment
+        run: |
+          sleep 300  # Wait for metrics collection
+          echo "Validating 50% canary metrics..."
+          # Add advanced metric validation here
+
+      - name: Full production rollout
+        run: |
+          # Promote to 100% (full production)
+          kubectl argo rollouts promote prod-crm-app-rollout -n $NAMESPACE
+          
+          # Wait for full rollout
+          kubectl argo rollouts get rollout prod-crm-app-rollout -n $NAMESPACE --watch --timeout=600s
+
+      - name: Post-deployment validation
+        run: |
+          # Comprehensive health checks
+          kubectl get pods -n $NAMESPACE -l app=crm-app
+          kubectl get services -n $NAMESPACE -l app=crm-app
+          
+          # Validate application endpoints
+          PROD_URL="https://crm.yourdomain.com"
+          curl -f $PROD_URL/health
+          curl -f $PROD_URL/api/companies
+          
+          # Run smoke tests
+          npx playwright test --config=playwright-prod.config.js --grep="@smoke"
+
+      - name: Update release status
+        run: |
+          # Update GitHub release with deployment info
+          gh release edit ${{ needs.pre-deployment-checks.outputs.release-tag }} \
+            --notes-file DEPLOYMENT_NOTES.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify stakeholders
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#production-deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_PROD }}
+          fields: repo,message,commit,author,action,eventName,ref,workflow
+
+  rollback-on-failure:
+    name: Automatic Rollback
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    if: failure()
+    environment: production
+    
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER_PROD }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT_PROD }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials "$CLUSTER_NAME" --zone="$CLUSTER_ZONE"
+
+      - name: Setup Argo Rollouts CLI
+        run: |
+          curl -LO https://github.com/argoproj/argo-rollouts/releases/latest/download/kubectl-argo-rollouts-linux-amd64
+          chmod +x kubectl-argo-rollouts-linux-amd64
+          sudo mv kubectl-argo-rollouts-linux-amd64 /usr/local/bin/kubectl-argo-rollouts
+
+      - name: Rollback deployment
+        run: |
+          # Abort current rollout and rollback
+          kubectl argo rollouts abort prod-crm-app-rollout -n $NAMESPACE
+          kubectl argo rollouts undo prod-crm-app-rollout -n $NAMESPACE
+          
+          # Wait for rollback completion
+          kubectl argo rollouts get rollout prod-crm-app-rollout -n $NAMESPACE --watch --timeout=600s
+
+      - name: Notify rollback
+        uses: 8398a7/action-slack@v3
+        with:
+          status: 'warning'
+          channel: '#production-deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_PROD }}
+          fields: repo,message,commit,author,action,eventName,ref,workflow
+          custom_payload: |
+            {
+              text: "🚨 PRODUCTION ROLLBACK INITIATED",
+              attachments: [{
+                color: "warning",
+                fields: [{
+                  title: "Repository",
+                  value: "${{ github.repository }}",
+                  short: true
+                }, {
+                  title: "Release",
+                  value: "${{ needs.pre-deployment-checks.outputs.release-tag }}",
+                  short: true
+                }]
+              }]
+            }

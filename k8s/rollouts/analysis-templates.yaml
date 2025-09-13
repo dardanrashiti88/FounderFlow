@@ -1,0 +1,102 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate
+  namespace: crm-system
+spec:
+  args:
+  - name: service-name
+    value: crm-app-canary
+  - name: prometheus-server
+    value: "http://prometheus-server.monitoring.svc.cluster.local:9090"
+  metrics:
+  - name: success-rate
+    initialDelay: 60s
+    interval: 20s
+    count: 5
+    successCondition: result[0] >= 0.95
+    failureLimit: 3
+    provider:
+      prometheus:
+        address: "{{args.prometheus-server}}"
+        query: |
+          sum(irate(
+            http_requests_total{job="{{args.service-name}}",code!~"5.."}[2m]
+          )) / 
+          sum(irate(
+            http_requests_total{job="{{args.service-name}}"}[2m]
+          ))
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: latency
+  namespace: crm-system
+spec:
+  args:
+  - name: service-name
+    value: crm-app-canary
+  - name: prometheus-server
+    value: "http://prometheus-server.monitoring.svc.cluster.local:9090"
+  metrics:
+  - name: latency-p99
+    initialDelay: 60s
+    interval: 20s
+    count: 5
+    successCondition: result[0] <= 0.5
+    failureLimit: 3
+    provider:
+      prometheus:
+        address: "{{args.prometheus-server}}"
+        query: |
+          histogram_quantile(0.99,
+            sum(irate(
+              http_request_duration_seconds_bucket{job="{{args.service-name}}"}[2m]
+            )) by (le)
+          )
+  - name: latency-p95
+    initialDelay: 60s
+    interval: 20s
+    count: 5
+    successCondition: result[0] <= 0.2
+    failureLimit: 3
+    provider:
+      prometheus:
+        address: "{{args.prometheus-server}}"
+        query: |
+          histogram_quantile(0.95,
+            sum(irate(
+              http_request_duration_seconds_bucket{job="{{args.service-name}}"}[2m]
+            )) by (le)
+          )
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: error-rate
+  namespace: crm-system
+spec:
+  args:
+  - name: service-name
+    value: crm-app-canary
+  - name: prometheus-server
+    value: "http://prometheus-server.monitoring.svc.cluster.local:9090"
+  metrics:
+  - name: error-rate
+    initialDelay: 60s
+    interval: 30s
+    count: 3
+    successCondition: result[0] <= 0.05
+    failureLimit: 2
+    provider:
+      prometheus:
+        address: "{{args.prometheus-server}}"
+        query: |
+          sum(irate(
+            http_requests_total{job="{{args.service-name}}",code=~"5.."}[5m]
+          )) / 
+          sum(irate(
+            http_requests_total{job="{{args.service-name}}"}[5m]
+          ))

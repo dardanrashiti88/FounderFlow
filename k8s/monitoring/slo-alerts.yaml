@@ -1,0 +1,195 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: crm-slo-alerts
+  namespace: crm-monitoring
+  labels:
+    app: crm-app
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+  - name: crm.slo.rules
+    interval: 30s
+    rules:
+    # SLI: Request Success Rate
+    - record: crm:sli_request_success_rate
+      expr: |
+        sum(rate(http_requests_total{job=~"crm-app.*",code!~"5.."}[5m])) / 
+        sum(rate(http_requests_total{job=~"crm-app.*"}[5m]))
+    
+    # SLI: Request Latency P99
+    - record: crm:sli_request_latency_p99
+      expr: |
+        histogram_quantile(0.99, 
+          sum(rate(http_request_duration_seconds_bucket{job=~"crm-app.*"}[5m])) by (le)
+        )
+    
+    # SLI: Request Latency P95
+    - record: crm:sli_request_latency_p95
+      expr: |
+        histogram_quantile(0.95, 
+          sum(rate(http_request_duration_seconds_bucket{job=~"crm-app.*"}[5m])) by (le)
+        )
+    
+    # SLO: 99.9% availability (error budget 0.1%)
+    - alert: CRMHighErrorRate
+      expr: |
+        (
+          1 - crm:sli_request_success_rate
+        ) * 100 > 0.1
+      for: 2m
+      labels:
+        severity: critical
+        service: crm-app
+        slo: availability
+      annotations:
+        summary: "CRM application error rate is too high"
+        description: |
+          CRM application error rate is {{ $value | humanizePercentage }} over the last 5 minutes.
+          This exceeds our SLO of 99.9% availability.
+        runbook_url: "https://runbooks.yourcompany.com/crm-high-error-rate"
+    
+    # SLO: 95% of requests faster than 500ms
+    - alert: CRMHighLatency
+      expr: crm:sli_request_latency_p95 > 0.5
+      for: 5m
+      labels:
+        severity: warning
+        service: crm-app
+        slo: latency
+      annotations:
+        summary: "CRM application latency is too high"
+        description: |
+          CRM application 95th percentile latency is {{ $value | humanizeDuration }}.
+          This exceeds our SLO of 500ms for 95% of requests.
+        runbook_url: "https://runbooks.yourcompany.com/crm-high-latency"
+    
+    # SLO: 99% of requests faster than 2s
+    - alert: CRMVeryHighLatency
+      expr: crm:sli_request_latency_p99 > 2.0
+      for: 2m
+      labels:
+        severity: critical
+        service: crm-app
+        slo: latency
+      annotations:
+        summary: "CRM application latency is critically high"
+        description: |
+          CRM application 99th percentile latency is {{ $value | humanizeDuration }}.
+          This exceeds our SLO of 2s for 99% of requests.
+        runbook_url: "https://runbooks.yourcompany.com/crm-high-latency"
+
+  - name: crm.infrastructure.rules
+    interval: 30s
+    rules:
+    # Infrastructure health
+    - alert: CRMPodCrashLooping
+      expr: |
+        rate(kube_pod_container_status_restarts_total{pod=~".*crm-app.*"}[5m]) > 0.1
+      for: 2m
+      labels:
+        severity: warning
+        service: crm-app
+        component: infrastructure
+      annotations:
+        summary: "CRM pod is crash looping"
+        description: |
+          Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is restarting 
+          more than once every 10 minutes.
+    
+    - alert: CRMHighMemoryUsage
+      expr: |
+        (
+          container_memory_working_set_bytes{pod=~".*crm-app.*"} / 
+          container_spec_memory_limit_bytes{pod=~".*crm-app.*"}
+        ) * 100 > 85
+      for: 5m
+      labels:
+        severity: warning
+        service: crm-app
+        component: infrastructure
+      annotations:
+        summary: "CRM container memory usage is high"
+        description: |
+          Container {{ $labels.container }} in pod {{ $labels.pod }} is using
+          {{ $value | humanizePercentage }} of its memory limit.
+    
+    - alert: CRMHighCPUUsage
+      expr: |
+        (
+          rate(container_cpu_usage_seconds_total{pod=~".*crm-app.*"}[5m]) * 100
+        ) > 80
+      for: 10m
+      labels:
+        severity: warning
+        service: crm-app
+        component: infrastructure
+      annotations:
+        summary: "CRM container CPU usage is high"
+        description: |
+          Container {{ $labels.container }} in pod {{ $labels.pod }} is using
+          {{ $value }}% CPU over the last 5 minutes.
+    
+    # Database health
+    - alert: PostgreSQLDown
+      expr: up{job="postgres-service"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        service: postgresql
+        component: database
+      annotations:
+        summary: "PostgreSQL database is down"
+        description: "PostgreSQL database has been down for more than 1 minute."
+        runbook_url: "https://runbooks.yourcompany.com/postgresql-down"
+    
+    - alert: PostgreSQLHighConnections
+      expr: |
+        (
+          pg_stat_database_numbackends / pg_settings_max_connections
+        ) * 100 > 80
+      for: 5m
+      labels:
+        severity: warning
+        service: postgresql
+        component: database
+      annotations:
+        summary: "PostgreSQL connection usage is high"
+        description: |
+          PostgreSQL is using {{ $value | humanizePercentage }} of available connections.
+
+  - name: crm.business.rules
+    interval: 60s
+    rules:
+    # Business metrics SLOs
+    - alert: CRMDealConversionRateDrop
+      expr: |
+        (
+          (crm_deals_total{stage="closed_won"} / 
+           (crm_deals_total{stage="closed_won"} + crm_deals_total{stage="closed_lost"})) * 100
+        ) < 15
+      for: 10m
+      labels:
+        severity: warning
+        service: crm-app
+        component: business
+      annotations:
+        summary: "CRM deal conversion rate has dropped significantly"
+        description: |
+          Deal conversion rate has dropped to {{ $value | humanizePercentage }}.
+          This is below our expected threshold of 15%.
+    
+    - alert: CRMPipelineValueDrop
+      expr: |
+        decrease(crm_pipeline_value_dollars[1h]) > 10000
+      for: 5m
+      labels:
+        severity: warning
+        service: crm-app
+        component: business
+      annotations:
+        summary: "CRM pipeline value has decreased significantly"
+        description: |
+          Pipeline value has decreased by ${{ $value | humanize }} in the last hour.
+        runbook_url: "https://runbooks.yourcompany.com/pipeline-drop"

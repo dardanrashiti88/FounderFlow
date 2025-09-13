@@ -1,0 +1,204 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privileged-containers
+  annotations:
+    policies.kyverno.io/title: Disallow Privileged Containers
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      Privileged containers share namespaces with the host system and do not offer any security isolation.
+spec:
+  validationFailureAction: enforce
+  background: true
+  rules:
+    - name: disallow-privileged
+      match:
+        any:
+        - resources:
+            kinds:
+            - Pod
+      validate:
+        message: "Privileged containers are not allowed"
+        pattern:
+          spec:
+            =(securityContext):
+              =(privileged): "false"
+            containers:
+            - name: "*"
+              =(securityContext):
+                =(privileged): "false"
+
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-pod-resources
+  annotations:
+    policies.kyverno.io/title: Require Pod Resources
+    policies.kyverno.io/category: Resource Management
+    policies.kyverno.io/severity: medium
+spec:
+  validationFailureAction: enforce
+  background: true
+  rules:
+    - name: validate-resources
+      match:
+        any:
+        - resources:
+            kinds:
+            - Pod
+            namespaces:
+            - crm-system
+            - crm-staging
+            - crm-production
+      validate:
+        message: "Resource requests and limits are required for all containers"
+        pattern:
+          spec:
+            containers:
+            - name: "*"
+              resources:
+                requests:
+                  memory: "?*"
+                  cpu: "?*"
+                limits:
+                  memory: "?*"
+                  cpu: "?*"
+
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-image-signature
+  annotations:
+    policies.kyverno.io/title: Require Image Signature
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/severity: high
+spec:
+  validationFailureAction: enforce
+  background: false
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: verify-signature
+      match:
+        any:
+        - resources:
+            kinds:
+            - Pod
+            namespaces:
+            - crm-production
+      verifyImages:
+      - imageReferences:
+        - "ghcr.io/yourorg/crm-app:*"
+        attestors:
+        - entries:
+          - keyless:
+              subject: "https://github.com/yourorg/crm-app/.github/workflows/ci.yml@refs/heads/main"
+              issuer: "https://token.actions.githubusercontent.com"
+
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: add-security-context
+  annotations:
+    policies.kyverno.io/title: Add Security Context
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/severity: medium
+spec:
+  rules:
+    - name: add-security-context
+      match:
+        any:
+        - resources:
+            kinds:
+            - Pod
+            namespaces:
+            - crm-system
+      mutate:
+        patchStrategicMerge:
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 1001
+              runAsGroup: 1001
+              fsGroup: 1001
+            containers:
+            - (name): "*"
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 1001
+                runAsGroup: 1001
+                capabilities:
+                  drop:
+                  - ALL
+
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-labels
+  annotations:
+    policies.kyverno.io/title: Require Standard Labels
+    policies.kyverno.io/category: Governance
+    policies.kyverno.io/severity: low
+spec:
+  validationFailureAction: enforce
+  background: true
+  rules:
+    - name: require-labels
+      match:
+        any:
+        - resources:
+            kinds:
+            - Deployment
+            - Service
+            - ConfigMap
+            - Secret
+            namespaces:
+            - crm-system
+            - crm-staging  
+            - crm-production
+      validate:
+        message: "Standard labels are required: app.kubernetes.io/name, app.kubernetes.io/version, app.kubernetes.io/component"
+        pattern:
+          metadata:
+            labels:
+              app.kubernetes.io/name: "?*"
+              app.kubernetes.io/version: "?*"
+              app.kubernetes.io/component: "?*"
+
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-node-selector
+  annotations:
+    policies.kyverno.io/title: Restrict Node Selector
+    policies.kyverno.io/category: Resource Management
+spec:
+  validationFailureAction: enforce
+  background: true
+  rules:
+    - name: restrict-node-selector
+      match:
+        any:
+        - resources:
+            kinds:
+            - Pod
+      validate:
+        message: "Node selector must only use approved labels"
+        deny:
+          conditions:
+            any:
+            - key: "{{ request.object.spec.nodeSelector || {} | keys(@) }}"
+              operator: AnyNotIn
+              value: 
+              - "kubernetes.io/os"
+              - "kubernetes.io/arch"
+              - "node.kubernetes.io/instance-type"
+              - "workload-type"
+              - "environment"

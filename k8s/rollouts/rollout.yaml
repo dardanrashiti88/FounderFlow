@@ -1,19 +1,63 @@
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata:
-  name: crm-app-deployment
+  name: crm-app-rollout
   labels:
     app: crm-app
     tier: backend
-  annotations:
-    deployment.kubernetes.io/revision: "1"
 spec:
-  replicas: 3
+  replicas: 5
   strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 50%
-      maxUnavailable: 25%
+    canary:
+      maxSurge: "25%"
+      maxUnavailable: 0
+      analysis:
+        templates:
+        - templateName: success-rate
+        - templateName: latency
+        startingStep: 2
+        args:
+        - name: service-name
+          value: crm-app-canary
+      steps:
+      - setWeight: 10
+      - pause:
+          duration: 2m
+      - analysis:
+          templates:
+          - templateName: success-rate
+          - templateName: latency
+          args:
+          - name: service-name
+            value: crm-app-canary
+      - setWeight: 25
+      - pause:
+          duration: 3m
+      - setWeight: 50
+      - pause:
+          duration: 5m
+      - analysis:
+          templates:
+          - templateName: success-rate
+          - templateName: latency
+          args:
+          - name: service-name
+            value: crm-app-canary
+      - setWeight: 75
+      - pause:
+          duration: 5m
+      - setWeight: 100
+      canaryService: crm-app-canary
+      stableService: crm-app-stable
+      trafficRouting:
+        nginx:
+          stableIngress: crm-app-ingress
+          annotationPrefix: nginx.ingress.kubernetes.io
+          additionalIngressAnnotations:
+            canary-by-header: X-Canary
+            canary-by-header-value: "true"
+      scaleDownDelaySeconds: 30
+      abortScaleDownDelaySeconds: 30
   selector:
     matchLabels:
       app: crm-app
@@ -23,7 +67,7 @@ spec:
       labels:
         app: crm-app
         tier: backend
-        version: v1
+        version: canary
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "5000"
@@ -39,15 +83,9 @@ spec:
           protocol: TCP
         env:
         - name: NODE_ENV
-          valueFrom:
-            configMapKeyRef:
-              name: crm-config
-              key: NODE_ENV
+          value: "production"
         - name: PORT
-          valueFrom:
-            configMapKeyRef:
-              name: crm-config
-              key: PORT
+          value: "5000"
         - name: SESSION_SECRET
           valueFrom:
             secretKeyRef:
@@ -58,22 +96,18 @@ spec:
             secretKeyRef:
               name: postgres-secrets
               key: DATABASE_URL
-        - name: POD_NAME
+        - name: ROLLOUT_POD_TEMPLATE_HASH
           valueFrom:
             fieldRef:
-              fieldPath: metadata.name
-        - name: POD_NAMESPACE
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.namespace
+              fieldPath: metadata.labels['rollouts-pod-template-hash']
         resources:
           requests:
-            memory: "128Mi"
-            cpu: "100m"
+            memory: "512Mi"
+            cpu: "250m"
             ephemeral-storage: "512Mi"
           limits:
-            memory: "512Mi"
-            cpu: "500m"
+            memory: "2Gi"
+            cpu: "1000m"
             ephemeral-storage: "1Gi"
         livenessProbe:
           httpGet:

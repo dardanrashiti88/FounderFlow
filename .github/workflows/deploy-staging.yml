@@ -1,0 +1,124 @@
+name: Deploy to Staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy'
+        required: true
+        default: 'main'
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+env:
+  CLUSTER_NAME: staging-cluster
+  CLUSTER_ZONE: us-central1-b
+  NAMESPACE: crm-staging
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging Environment
+    runs-on: ubuntu-latest
+    environment: 
+      name: staging
+      url: https://crm-staging.yourdomain.com
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials "$CLUSTER_NAME" --zone="$CLUSTER_ZONE"
+
+      - name: Setup Kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Update image tag
+        run: |
+          cd k8s/overlays/staging
+          kustomize edit set image crm-app=ghcr.io/${{ github.repository }}:${{ github.event.inputs.image_tag }}
+
+      - name: Deploy to staging (Canary)
+        run: |
+          # Apply canary deployment
+          kustomize build k8s/overlays/staging | kubectl apply -f -
+          
+          # Wait for rollout to start
+          kubectl rollout status deployment/staging-crm-app-deployment -n $NAMESPACE --timeout=600s
+
+      - name: Security testing with OWASP ZAP
+        run: |
+          # Get staging URL
+          STAGING_URL="https://crm-staging.yourdomain.com"
+          
+          # Run OWASP ZAP baseline scan
+          docker run -v $(pwd):/zap/wrk/:rw \
+            -t ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t $STAGING_URL \
+            -g gen.conf \
+            -r zap-report.html \
+            -J zap-report.json || true
+
+      - name: Upload ZAP scan results
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-scan-results
+          path: |
+            zap-report.html
+            zap-report.json
+
+      - name: Run comprehensive E2E tests
+        run: |
+          # Install test dependencies
+          npm ci
+          npx playwright install --with-deps
+          
+          # Run full E2E test suite against staging
+          npx playwright test --config=playwright-staging.config.js --reporter=github
+
+      - name: Performance testing
+        run: |
+          # Install k6
+          sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+          
+          # Run load tests
+          k6 run --out json=load-test-results.json tests/load-test.js
+
+      - name: Validate metrics and SLOs
+        run: |
+          # Check application metrics and SLOs
+          kubectl get servicemonitor -n $NAMESPACE
+          
+          # Validate error rates and response times
+          # This would typically query Prometheus
+          echo "Validating SLOs and metrics..."
+
+      - name: Notify deployment status
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        if: always()
