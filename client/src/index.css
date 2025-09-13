@@ -1,0 +1,112 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: hsl(220, 14%, 96%);
+  --foreground: hsl(220, 8%, 12%);
+  --card: hsl(0, 0%, 100%);
+  --card-foreground: hsl(220, 8%, 12%);
+  --popover: hsl(0, 0%, 100%);
+  --popover-foreground: hsl(220, 8%, 12%);
+  --primary: hsl(220, 91%, 56%);
+  --primary-foreground: hsl(210, 40%, 98%);
+  --secondary: hsl(220, 14%, 91%);
+  --secondary-foreground: hsl(220, 9%, 21%);
+  --muted: hsl(220, 14%, 91%);
+  --muted-foreground: hsl(220, 8%, 46%);
+  --accent: hsl(220, 14%, 91%);
+  --accent-foreground: hsl(220, 9%, 21%);
+  --destructive: hsl(0, 84%, 60%);
+  --destructive-foreground: hsl(210, 40%, 98%);
+  --border: hsl(220, 13%, 91%);
+  --input: hsl(220, 13%, 91%);
+  --ring: hsl(220, 91%, 56%);
+  --chart-1: hsl(220, 91%, 56%);
+  --chart-2: hsl(160, 60%, 45%);
+  --chart-3: hsl(30, 80%, 55%);
+  --chart-4: hsl(280, 65%, 60%);
+  --chart-5: hsl(340, 75%, 55%);
+  --radius: 8px;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-serif: Georgia, serif;
+  --font-mono: Menlo, monospace;
+  --spacing: 0.25rem;
+}
+
+.dark {
+  --background: hsl(220, 23%, 7%);
+  --foreground: hsl(210, 40%, 95%);
+  --card: hsl(220, 15%, 11%);
+  --card-foreground: hsl(210, 40%, 95%);
+  --popover: hsl(220, 15%, 11%);
+  --popover-foreground: hsl(210, 40%, 95%);
+  --primary: hsl(220, 91%, 56%);
+  --primary-foreground: hsl(220, 23%, 7%);
+  --secondary: hsl(220, 15%, 15%);
+  --secondary-foreground: hsl(210, 40%, 85%);
+  --muted: hsl(220, 15%, 15%);
+  --muted-foreground: hsl(220, 8%, 55%);
+  --accent: hsl(220, 15%, 15%);
+  --accent-foreground: hsl(210, 40%, 85%);
+  --destructive: hsl(0, 62%, 50%);
+  --destructive-foreground: hsl(210, 40%, 95%);
+  --border: hsl(220, 15%, 15%);
+  --input: hsl(220, 15%, 15%);
+  --ring: hsl(220, 91%, 56%);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply font-sans antialiased bg-background text-foreground;
+  }
+}
+
+@layer components {
+  .progress-bar {
+    transition: width 0.3s ease-in-out;
+  }
+
+  .deal-stage {
+    transition: all 0.2s ease-in-out;
+  }
+
+  .deal-stage:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
+  }
+
+  .metric-card {
+    transition: all 0.2s ease-in-out;
+  }
+
+  .metric-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 25px -8px rgba(0, 0, 0, 0.15);
+  }
+
+  .sidebar-link {
+    transition: all 0.2s ease-in-out;
+  }
+
+  .sidebar-link:hover {
+    background-color: hsl(var(--accent));
+    color: hsl(var(--accent-foreground));
+  }
+
+  .sidebar-link.active {
+    background-color: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+  }
+
+  .chart-container {
+    position: relative;
+    height: 300px;
+    width: 100%;
+  }
+}
