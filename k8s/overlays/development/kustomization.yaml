@@ -1,0 +1,54 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: crm-development
+
+resources:
+- ../../base
+
+namePrefix: dev-
+nameSuffix: -v1
+
+commonLabels:
+  environment: development
+  team: engineering
+
+patches:
+- patch: |-
+    - op: replace
+      path: /spec/replicas
+      value: 1
+  target:
+    kind: Deployment
+    name: crm-app-deployment
+
+- patch: |-
+    - op: replace
+      path: /spec/minReplicas
+      value: 1
+    - op: replace
+      path: /spec/maxReplicas
+      value: 3
+  target:
+    kind: HorizontalPodAutoscaler
+    name: crm-app-hpa
+
+- patch: |-
+    - op: replace
+      path: /spec/resources/requests/storage
+      value: 5Gi
+  target:
+    kind: PersistentVolumeClaim
+    name: postgres-pvc
+
+configMapGenerator:
+- name: dev-env-config
+  literals:
+  - NODE_ENV=development
+  - LOG_LEVEL=debug
+  - DEBUG_MODE=true
+
+images:
+- name: crm-app
+  newTag: dev-latest

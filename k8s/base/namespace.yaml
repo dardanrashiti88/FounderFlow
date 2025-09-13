@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: crm-system
+  labels:
+    name: crm-system
+    tier: application
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: crm-monitoring
+  labels:
+    name: crm-monitoring
+    tier: monitoring

@@ -3,8 +3,45 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertCompanySchema, insertContactSchema, insertDealSchema, insertActivitySchema } from "@shared/schema";
 import { ZodError } from "zod";
+import { register, httpRequestsTotal, httpRequestDuration, totalDeals, pipelineValue, conversionRate } from "./metrics";
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Health check endpoint for Docker/Kubernetes
+  app.get("/health", (req, res) => {
+    res.status(200).json({ 
+      status: "healthy", 
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime() 
+    });
+  });
+
+  // Prometheus metrics endpoint
+  app.get("/metrics", async (req, res) => {
+    try {
+      // Update business metrics before scraping
+      const deals = await storage.getDeals();
+      const metrics = await storage.getMetrics();
+      
+      // Update deal counts by stage
+      const dealsByStage = deals.reduce((acc, deal) => {
+        acc[deal.stage] = (acc[deal.stage] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+      
+      Object.entries(dealsByStage).forEach(([stage, count]) => {
+        totalDeals.set({ stage }, count);
+      });
+      
+      pipelineValue.set(metrics.pipelineValue);
+      conversionRate.set(metrics.conversionRate);
+      
+      res.set('Content-Type', register.contentType);
+      res.end(await register.metrics());
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch metrics" });
+    }
+  });
+
   // Companies
   app.get("/api/companies", async (req, res) => {
     try {

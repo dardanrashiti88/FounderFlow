@@ -1,0 +1,74 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: crm-production
+
+resources:
+- ../../base
+- production-secrets.yaml
+- backup-cronjob.yaml
+
+namePrefix: prod-
+nameSuffix: -stable
+
+commonLabels:
+  environment: production
+  team: platform
+
+patches:
+- patch: |-
+    - op: replace
+      path: /spec/replicas
+      value: 5
+  target:
+    kind: Deployment
+    name: crm-app-deployment
+
+- patch: |-
+    - op: replace
+      path: /spec/minReplicas
+      value: 3
+    - op: replace
+      path: /spec/maxReplicas
+      value: 50
+  target:
+    kind: HorizontalPodAutoscaler
+    name: crm-app-hpa
+
+- patch: |-
+    - op: replace
+      path: /spec/resources/requests/storage
+      value: 100Gi
+  target:
+    kind: PersistentVolumeClaim
+    name: postgres-pvc
+
+- patch: |-
+    - op: replace
+      path: /spec/template/spec/containers/0/resources/requests/memory
+      value: "512Mi"
+    - op: replace
+      path: /spec/template/spec/containers/0/resources/requests/cpu
+      value: "250m"
+    - op: replace
+      path: /spec/template/spec/containers/0/resources/limits/memory
+      value: "2Gi"
+    - op: replace
+      path: /spec/template/spec/containers/0/resources/limits/cpu
+      value: "1000m"
+  target:
+    kind: Deployment
+    name: crm-app-deployment
+
+configMapGenerator:
+- name: prod-env-config
+  literals:
+  - NODE_ENV=production
+  - LOG_LEVEL=info
+  - DEBUG_MODE=false
+  - METRICS_ENABLED=true
+
+images:
+- name: crm-app
+  newTag: v1.0.0

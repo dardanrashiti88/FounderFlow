@@ -1,0 +1,142 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: crm-app-monitor
+  namespace: crm-monitoring
+  labels:
+    app: crm-app
+    tier: backend
+    prometheus: kube-prometheus
+spec:
+  selector:
+    matchLabels:
+      app: crm-app
+  namespaceSelector:
+    matchNames:
+    - crm-system
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+    honorLabels: true
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: postgres-monitor
+  namespace: crm-monitoring
+  labels:
+    app: postgres
+    tier: database
+    prometheus: kube-prometheus
+spec:
+  selector:
+    matchLabels:
+      app: postgres
+  namespaceSelector:
+    matchNames:
+    - crm-system
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: crm-alerts
+  namespace: crm-monitoring
+  labels:
+    app: crm-app
+    prometheus: kube-prometheus
+spec:
+  groups:
+  - name: crm.rules
+    rules:
+    - alert: CRMAppDown
+      expr: up{job="crm-app-service"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "CRM Application is down"
+        description: "CRM Application has been down for more than 1 minute"
+    
+    - alert: CRMHighMemoryUsage
+      expr: (container_memory_working_set_bytes{container="crm-app"} / container_spec_memory_limit_bytes{container="crm-app"}) * 100 > 90
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High memory usage for CRM app"
+        description: "CRM application is using {{ $value }}% of available memory"
+    
+    - alert: CRMHighCPUUsage
+      expr: (rate(container_cpu_usage_seconds_total{container="crm-app"}[5m]) * 100) > 80
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High CPU usage for CRM app"
+        description: "CRM application CPU usage is {{ $value }}%"
+    
+    - alert: PostgreSQLDown
+      expr: up{job="postgres-service"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "PostgreSQL is down"
+        description: "PostgreSQL database has been down for more than 1 minute"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-crm
+  namespace: crm-monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  crm-dashboard.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "CRM Application Dashboard",
+        "tags": ["crm", "application"],
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "Application Requests/sec",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "rate(http_requests_total[5m])",
+                "legendFormat": "{{ method }} {{ status }}"
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "title": "Response Time",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
+                "legendFormat": "95th percentile"
+              }
+            ]
+          }
+        ],
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "refresh": "5s"
+      }
+    }
