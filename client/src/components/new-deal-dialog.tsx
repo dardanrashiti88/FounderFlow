@@ -24,7 +24,9 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 const dealFormSchema = insertDealSchema.extend({
-  expectedCloseDate: z.string().optional()
+  expectedCloseDate: z.string().optional(),
+  companyId: z.string().min(1, "Company is required"),
+  contactId: z.string().min(1, "Contact is required")
 });
 
 type DealFormData = z.infer<typeof dealFormSchema>;
